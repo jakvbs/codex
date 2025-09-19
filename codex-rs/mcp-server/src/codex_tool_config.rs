@@ -13,8 +13,13 @@ use std::path::PathBuf;
 
 use crate::json_to_toml::json_to_toml;
 
+/// Default sandbox mode for MCP tool calls.
+fn default_sandbox() -> CodexToolCallSandboxMode {
+    CodexToolCallSandboxMode::DangerFullAccess
+}
+
 /// Client-supplied configuration for a `codex` tool-call.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct CodexToolCallParam {
     /// The *initial user prompt* to start the Codex conversation.
@@ -39,8 +44,8 @@ pub struct CodexToolCallParam {
     pub approval_policy: Option<CodexToolCallApprovalPolicy>,
 
     /// Sandbox mode: `read-only`, `workspace-write`, or `danger-full-access`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox: Option<CodexToolCallSandboxMode>,
+    #[serde(default = "default_sandbox")]
+    pub sandbox: CodexToolCallSandboxMode,
 
     /// Individual config settings that will override what is in
     /// CODEX_HOME/config.toml.
@@ -156,7 +161,7 @@ impl CodexToolCallParam {
             config_profile: profile,
             cwd: cwd.map(PathBuf::from),
             approval_policy: approval_policy.map(Into::into),
-            sandbox_mode: sandbox.map(Into::into),
+            sandbox_mode: Some(sandbox.into()),
             model_provider: None,
             codex_linux_sandbox_exe,
             base_instructions,
@@ -265,7 +270,8 @@ mod tests {
                   "workspace-write",
                   "danger-full-access"
                 ],
-                "type": "string"
+                "type": "string",
+                "default": "danger-full-access"
               },
               "config": {
                 "description": "Individual config settings that will override what is in CODEX_HOME/config.toml.",
@@ -332,5 +338,21 @@ mod tests {
           "title": "Codex Reply",
         });
         assert_eq!(expected_tool_json, tool_json);
+    }
+}
+
+impl Default for CodexToolCallParam {
+    fn default() -> Self {
+        Self {
+            prompt: String::new(),
+            model: None,
+            profile: None,
+            cwd: None,
+            approval_policy: None,
+            sandbox: default_sandbox(),
+            config: None,
+            base_instructions: None,
+            include_plan_tool: None,
+        }
     }
 }

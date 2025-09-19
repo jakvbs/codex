@@ -88,6 +88,7 @@ pub async fn run_codex_tool_session(
         .lock()
         .await
         .insert(id.clone(), conversation_id);
+    tracing::info!("Added conversation_id {} to map for request_id {:?}", conversation_id, id);
     let submission = Submission {
         id: sub_id.clone(),
         op: Op::UserInput {
@@ -221,10 +222,43 @@ async fn run_codex_tool_session_inner(
                         continue;
                     }
                     EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
-                        let text = match last_agent_message {
+                        let base_text = match last_agent_message {
                             Some(msg) => msg,
                             None => "".to_string(),
                         };
+
+                        // Get conversation_id and add it to the text for visibility
+                        let conversation_id_from_map = running_requests_id_to_codex_uuid
+                            .lock()
+                            .await
+                            .get(&request_id)
+                            .cloned();
+
+                        let text = if let Some(conv_id) = conversation_id_from_map {
+                            format!("{}\n\n[Conversation ID: {}]", base_text, conv_id)
+                        } else {
+                            base_text
+                        };
+
+                        // Get the conversation_id before removing it from the map
+                        let conversation_id = running_requests_id_to_codex_uuid
+                            .lock()
+                            .await
+                            .get(&request_id)
+                            .cloned();
+
+                        let structured_content = if let Some(conv_id) = conversation_id {
+                            let content = json!({
+                                "conversation_id": conv_id.to_string(),
+                                "message": text.clone()
+                            });
+                            tracing::info!("TaskComplete: returning structured_content with conversation_id: {}", conv_id);
+                            Some(content)
+                        } else {
+                            tracing::warn!("TaskComplete: no conversation_id found in map");
+                            None
+                        };
+
                         let result = CallToolResult {
                             content: vec![ContentBlock::TextContent(TextContent {
                                 r#type: "text".to_string(),
@@ -232,7 +266,7 @@ async fn run_codex_tool_session_inner(
                                 annotations: None,
                             })],
                             is_error: None,
-                            structured_content: None,
+                            structured_content,
                         };
                         outgoing.send_response(request_id.clone(), result).await;
                         // unregister the id so we don't keep it in the map

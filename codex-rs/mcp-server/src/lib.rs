@@ -46,6 +46,44 @@ pub use crate::patch_approval::PatchApprovalResponse;
 /// plenty for an interactive CLI.
 const CHANNEL_CAPACITY: usize = 128;
 
+/// Read MCP-specific environment variables and convert them into CliConfigOverrides.
+fn read_mcp_env_overrides() -> CliConfigOverrides {
+    let mut raw_overrides = Vec::new();
+
+    // Read environment variables and convert them to -c key=value format
+    if let Ok(value) = std::env::var("CODEX_MCP_APPROVAL_POLICY") {
+        raw_overrides.push(format!("approval_policy={}", value));
+    }
+
+    if let Ok(value) = std::env::var("CODEX_MCP_BASE_INSTRUCTIONS") {
+        raw_overrides.push(format!("base_instructions=\"{}\"", value));
+    }
+
+    if let Ok(value) = std::env::var("CODEX_MCP_CONFIG") {
+        // Assume CONFIG is JSON that needs to be parsed and converted to individual overrides
+        // For now, we'll skip this complex case and handle it in future iteration
+        tracing::warn!("CODEX_MCP_CONFIG is not yet supported");
+    }
+
+    if let Ok(value) = std::env::var("CODEX_MCP_INCLUDE_PLAN_TOOL") {
+        raw_overrides.push(format!("include_plan_tool={}", value));
+    }
+
+    if let Ok(value) = std::env::var("CODEX_MCP_MODEL") {
+        raw_overrides.push(format!("model=\"{}\"", value));
+    }
+
+    if let Ok(value) = std::env::var("CODEX_MCP_PROFILE") {
+        raw_overrides.push(format!("profile=\"{}\"", value));
+    }
+
+    if let Ok(value) = std::env::var("CODEX_MCP_SANDBOX") {
+        raw_overrides.push(format!("sandbox_mode={}", value));
+    }
+
+    CliConfigOverrides { raw_overrides }
+}
+
 pub async fn run_main(
     codex_linux_sandbox_exe: Option<PathBuf>,
     cli_config_overrides: CliConfigOverrides,
@@ -84,12 +122,17 @@ pub async fn run_main(
         }
     });
 
-    // Parse CLI overrides once and derive the base Config eagerly so later
+    // Read MCP environment overrides and combine with CLI overrides
+    let mcp_env_overrides = read_mcp_env_overrides();
+    let mut combined_overrides = mcp_env_overrides;
+    combined_overrides.raw_overrides.extend(cli_config_overrides.raw_overrides);
+
+    // Parse combined overrides once and derive the base Config eagerly so later
     // components do not need to work with raw TOML values.
-    let cli_kv_overrides = cli_config_overrides.parse_overrides().map_err(|e| {
+    let cli_kv_overrides = combined_overrides.parse_overrides().map_err(|e| {
         std::io::Error::new(
             ErrorKind::InvalidInput,
-            format!("error parsing -c overrides: {e}"),
+            format!("error parsing combined overrides: {e}"),
         )
     })?;
     let config = Config::load_with_cli_overrides(cli_kv_overrides, ConfigOverrides::default())

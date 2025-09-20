@@ -14,6 +14,7 @@ use codex_protocol::mcp_protocol::ConversationId;
 use codex_core::AuthManager;
 use codex_core::ConversationManager;
 use codex_core::config::Config;
+use codex_core::config::ConfigOverrides;
 use codex_core::default_client::USER_AGENT_SUFFIX;
 use codex_core::default_client::get_codex_user_agent;
 use codex_core::protocol::Submission;
@@ -44,6 +45,7 @@ pub(crate) struct MessageProcessor {
     codex_linux_sandbox_exe: Option<PathBuf>,
     conversation_manager: Arc<ConversationManager>,
     running_requests_id_to_codex_uuid: Arc<Mutex<HashMap<RequestId, ConversationId>>>,
+    config: Arc<Config>,
 }
 
 impl MessageProcessor {
@@ -62,7 +64,7 @@ impl MessageProcessor {
             conversation_manager.clone(),
             outgoing.clone(),
             codex_linux_sandbox_exe.clone(),
-            config,
+            config.clone(),
         );
         Self {
             codex_message_processor,
@@ -71,6 +73,7 @@ impl MessageProcessor {
             codex_linux_sandbox_exe,
             conversation_manager,
             running_requests_id_to_codex_uuid: Arc::new(Mutex::new(HashMap::new())),
+            config,
         }
     }
 
@@ -360,27 +363,9 @@ impl MessageProcessor {
         }
     }
     async fn handle_tool_call_codex(&self, id: RequestId, arguments: Option<serde_json::Value>) {
-        let (initial_prompt, config): (String, Config) = match arguments {
+        let (initial_prompt, tool_cwd): (String, Option<PathBuf>) = match arguments {
             Some(json_val) => match serde_json::from_value::<CodexToolCallParam>(json_val) {
-                Ok(tool_cfg) => match tool_cfg.into_config(self.codex_linux_sandbox_exe.clone()) {
-                    Ok(cfg) => cfg,
-                    Err(e) => {
-                        let result = CallToolResult {
-                            content: vec![ContentBlock::TextContent(TextContent {
-                                r#type: "text".to_owned(),
-                                text: format!(
-                                    "Failed to load Codex configuration from overrides: {e}"
-                                ),
-                                annotations: None,
-                            })],
-                            is_error: Some(true),
-                            structured_content: None,
-                        };
-                        self.send_response::<mcp_types::CallToolRequest>(id, result)
-                            .await;
-                        return;
-                    }
-                },
+                Ok(tool_cfg) => tool_cfg.into_prompt_and_cwd(),
                 Err(e) => {
                     let result = CallToolResult {
                         content: vec![ContentBlock::TextContent(TextContent {
@@ -412,6 +397,35 @@ impl MessageProcessor {
                     .await;
                 return;
             }
+        };
+
+        // Create config for this tool call, potentially with overridden cwd
+        let config = if let Some(cwd) = tool_cwd {
+            // Create config override with tool-specific cwd
+            let overrides = ConfigOverrides {
+                cwd: Some(cwd),
+                ..ConfigOverrides::default()
+            };
+            match Config::load_with_cli_overrides(Vec::new(), overrides) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    let result = CallToolResult {
+                        content: vec![ContentBlock::TextContent(TextContent {
+                            r#type: "text".to_owned(),
+                            text: format!("Failed to create config with cwd override: {e}"),
+                            annotations: None,
+                        })],
+                        is_error: Some(true),
+                        structured_content: None,
+                    };
+                    self.send_response::<mcp_types::CallToolRequest>(id, result)
+                        .await;
+                    return;
+                }
+            }
+        } else {
+            // Use server config directly
+            (*self.config).clone()
         };
 
         // Clone outgoing and server to move into async task.

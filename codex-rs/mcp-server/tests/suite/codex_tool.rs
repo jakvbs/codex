@@ -15,7 +15,6 @@ use mcp_types::ElicitRequest;
 use mcp_types::ElicitRequestParamsRequestedSchema;
 use mcp_types::JSONRPC_VERSION;
 use mcp_types::JSONRPCRequest;
-use mcp_types::JSONRPCResponse;
 use mcp_types::ModelContextProtocolRequest;
 use mcp_types::RequestId;
 use pretty_assertions::assert_eq;

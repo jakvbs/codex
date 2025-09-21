@@ -19,6 +19,17 @@ pub struct CodexToolCallParam {
     /// the server process's current working directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+
+    /// Whether to continue the last conversation (default: true).
+    /// If false, always starts a new conversation.
+    /// Ignored if conversation_id is specified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continue_conversation: Option<bool>,
+
+    /// Specific conversation ID to continue.
+    /// If specified, overrides continue_conversation setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
 }
 
 
@@ -55,55 +66,25 @@ pub(crate) fn create_tool_for_codex_tool_call_param() -> Tool {
 }
 
 impl CodexToolCallParam {
-    /// Returns the initial user prompt and optional working directory.
+    /// Returns the parameters for the unified Codex tool call.
     /// The Config is now entirely managed by the server via environment variables.
-    pub fn into_prompt_and_cwd(self) -> (String, Option<PathBuf>) {
-        let Self { prompt, cwd } = self;
-        (prompt, cwd.map(PathBuf::from))
+    pub fn into_params(self) -> (String, Option<PathBuf>, Option<bool>, Option<String>) {
+        let Self {
+            prompt,
+            cwd,
+            continue_conversation,
+            conversation_id
+        } = self;
+        (
+            prompt,
+            cwd.map(PathBuf::from),
+            continue_conversation,
+            conversation_id
+        )
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexToolCallReplyParam {
-    /// The conversation id for this Codex session.
-    pub conversation_id: String,
 
-    /// The *next user prompt* to continue the Codex conversation.
-    pub prompt: String,
-}
-
-/// Builds a `Tool` definition for the `codex-reply` tool-call.
-pub(crate) fn create_tool_for_codex_tool_call_reply_param() -> Tool {
-    let schema = SchemaSettings::draft2019_09()
-        .with(|s| {
-            s.inline_subschemas = true;
-            s.option_add_null_type = false;
-        })
-        .into_generator()
-        .into_root_schema_for::<CodexToolCallReplyParam>();
-
-    #[expect(clippy::expect_used)]
-    let schema_value =
-        serde_json::to_value(&schema).expect("Codex reply tool schema should serialise to JSON");
-
-    let tool_input_schema =
-        serde_json::from_value::<ToolInputSchema>(schema_value).unwrap_or_else(|e| {
-            panic!("failed to create Tool from schema: {e}");
-        });
-
-    Tool {
-        name: "codex-reply".to_string(),
-        title: Some("Codex Reply".to_string()),
-        input_schema: tool_input_schema,
-        output_schema: None,
-        description: Some(
-            "Continue a Codex conversation by providing the conversation id and prompt."
-                .to_string(),
-        ),
-        annotations: None,
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -132,6 +113,14 @@ mod tests {
           "inputSchema": {
             "type": "object",
             "properties": {
+              "continue-conversation": {
+                "description": "Whether to continue the last conversation (default: true). If false, always starts a new conversation. Ignored if conversation_id is specified.",
+                "type": "boolean"
+              },
+              "conversation-id": {
+                "description": "Specific conversation ID to continue. If specified, overrides continue_conversation setting.",
+                "type": "string"
+              },
               "cwd": {
                 "description": "Working directory for the session. If relative, it is resolved against the server process's current working directory.",
                 "type": "string"
@@ -149,34 +138,6 @@ mod tests {
         assert_eq!(expected_tool_json, tool_json);
     }
 
-    #[test]
-    fn verify_codex_tool_reply_json_schema() {
-        let tool = create_tool_for_codex_tool_call_reply_param();
-        let tool_json = serde_json::to_value(&tool).expect("tool serializes");
-        let expected_tool_json = serde_json::json!({
-          "description": "Continue a Codex conversation by providing the conversation id and prompt.",
-          "inputSchema": {
-            "properties": {
-              "conversationId": {
-                "description": "The conversation id for this Codex session.",
-                "type": "string"
-              },
-              "prompt": {
-                "description": "The *next user prompt* to continue the Codex conversation.",
-                "type": "string"
-              },
-            },
-            "required": [
-              "conversationId",
-              "prompt",
-            ],
-            "type": "object",
-          },
-          "name": "codex-reply",
-          "title": "Codex Reply",
-        });
-        assert_eq!(expected_tool_json, tool_json);
-    }
 }
 
 impl Default for CodexToolCallParam {
@@ -184,6 +145,8 @@ impl Default for CodexToolCallParam {
         Self {
             prompt: String::new(),
             cwd: None,
+            continue_conversation: None,
+            conversation_id: None,
         }
     }
 }

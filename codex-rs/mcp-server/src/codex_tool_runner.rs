@@ -36,6 +36,7 @@ pub(crate) const INVALID_PARAMS_ERROR_CODE: i64 = -32602;
 ///
 /// On completion (success or error) the function sends the appropriate
 /// `tools/call` response so the LLM can continue the conversation.
+/// Returns the conversation ID if successfully created.
 pub async fn run_codex_tool_session(
     id: RequestId,
     initial_prompt: String,
@@ -43,7 +44,7 @@ pub async fn run_codex_tool_session(
     outgoing: Arc<OutgoingMessageSender>,
     conversation_manager: Arc<ConversationManager>,
     running_requests_id_to_codex_uuid: Arc<Mutex<HashMap<RequestId, ConversationId>>>,
-) {
+) -> Option<ConversationId> {
     let NewConversation {
         conversation_id,
         conversation,
@@ -61,7 +62,7 @@ pub async fn run_codex_tool_session(
                 structured_content: None,
             };
             outgoing.send_response(id.clone(), result).await;
-            return;
+            return None;
         }
     };
 
@@ -102,7 +103,7 @@ pub async fn run_codex_tool_session(
         tracing::error!("Failed to submit initial prompt: {e}");
         // unregister the id so we don't keep it in the map
         running_requests_id_to_codex_uuid.lock().await.remove(&id);
-        return;
+        return None;
     }
 
     run_codex_tool_session_inner(
@@ -112,6 +113,9 @@ pub async fn run_codex_tool_session(
         running_requests_id_to_codex_uuid,
     )
     .await;
+
+    // Return the conversation ID on successful completion
+    Some(conversation_id)
 }
 
 pub async fn run_codex_tool_session_reply(

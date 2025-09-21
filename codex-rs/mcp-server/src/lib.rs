@@ -33,7 +33,6 @@ use crate::outgoing_message::OutgoingMessage;
 use crate::outgoing_message::OutgoingMessageSender;
 
 pub use crate::codex_tool_config::CodexToolCallParam;
-pub use crate::codex_tool_config::CodexToolCallReplyParam;
 pub use crate::exec_approval::ExecApprovalElicitRequestParams;
 pub use crate::exec_approval::ExecApprovalResponse;
 pub use crate::patch_approval::PatchApprovalElicitRequestParams;
@@ -57,7 +56,7 @@ fn read_mcp_env_overrides() -> CliConfigOverrides {
         raw_overrides.push(format!("base_instructions=\"{}\"", value));
     }
 
-    if let Ok(value) = std::env::var("CODEX_MCP_CONFIG") {
+    if let Ok(_) = std::env::var("CODEX_MCP_CONFIG") {
         // Assume CONFIG is JSON that needs to be parsed and converted to individual overrides
         // For now, we'll skip this complex case and handle it in future iteration
         tracing::warn!("CODEX_MCP_CONFIG is not yet supported");

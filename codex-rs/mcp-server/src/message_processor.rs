@@ -2,9 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::codex_tool_config::CodexToolCallParam;
-use crate::codex_tool_config::CodexToolCallReplyParam;
 use crate::codex_tool_config::create_tool_for_codex_tool_call_param;
-use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
 use crate::outgoing_message::OutgoingMessageSender;
 use codex_protocol::ConversationId;
@@ -40,10 +38,10 @@ use tokio::task;
 pub(crate) struct MessageProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     initialized: bool,
-    codex_linux_sandbox_exe: Option<PathBuf>,
     conversation_manager: Arc<ConversationManager>,
     running_requests_id_to_codex_uuid: Arc<Mutex<HashMap<RequestId, ConversationId>>>,
     config: Arc<Config>,
+    last_conversation_id: Arc<Mutex<Option<ConversationId>>>,
 }
 
 impl MessageProcessor {
@@ -61,10 +59,10 @@ impl MessageProcessor {
         Self {
             outgoing,
             initialized: false,
-            codex_linux_sandbox_exe,
             conversation_manager,
             running_requests_id_to_codex_uuid: Arc::new(Mutex::new(HashMap::new())),
             config,
+            last_conversation_id: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -304,7 +302,6 @@ impl MessageProcessor {
         let result = ListToolsResult {
             tools: vec![
                 create_tool_for_codex_tool_call_param(),
-                create_tool_for_codex_tool_call_reply_param(),
             ],
             next_cursor: None,
         };
@@ -323,10 +320,6 @@ impl MessageProcessor {
 
         match name.as_str() {
             "codex" => self.handle_tool_call_codex(id, arguments).await,
-            "codex-reply" => {
-                self.handle_tool_call_codex_session_reply(id, arguments)
-                    .await
-            }
             _ => {
                 let result = CallToolResult {
                     content: vec![ContentBlock::TextContent(TextContent {
@@ -343,7 +336,7 @@ impl MessageProcessor {
         }
     }
     async fn handle_tool_call_codex(&self, id: RequestId, arguments: Option<serde_json::Value>) {
-        let (initial_prompt, tool_cwd, resume_last_session, conversation_id): (String, Option<PathBuf>, Option<bool>, Option<String>) = match arguments {
+        let (initial_prompt, tool_cwd, continue_conversation, conversation_id): (String, Option<PathBuf>, Option<bool>, Option<String>) = match arguments {
             Some(json_val) => match serde_json::from_value::<CodexToolCallParam>(json_val) {
                 Ok(tool_cfg) => tool_cfg.into_params(),
                 Err(e) => {
@@ -379,6 +372,63 @@ impl MessageProcessor {
             }
         };
 
+        // Determine conversation mode: new vs continue
+        let conversation_mode = if let Some(explicit_conversation_id) = conversation_id {
+            // Explicit conversation ID provided - try to continue that specific conversation
+            match ConversationId::from_string(&explicit_conversation_id) {
+                Ok(conv_id) => match self.conversation_manager.get_conversation(conv_id).await {
+                    Ok(existing_conversation) => Some((conv_id, existing_conversation)),
+                    Err(_) => {
+                        let result = CallToolResult {
+                            content: vec![ContentBlock::TextContent(TextContent {
+                                r#type: "text".to_owned(),
+                                text: format!("Conversation not found: {explicit_conversation_id}"),
+                                annotations: None,
+                            })],
+                            is_error: Some(true),
+                            structured_content: None,
+                        };
+                        self.send_response::<mcp_types::CallToolRequest>(id, result).await;
+                        return;
+                    }
+                }
+                Err(e) => {
+                    let result = CallToolResult {
+                        content: vec![ContentBlock::TextContent(TextContent {
+                            r#type: "text".to_owned(),
+                            text: format!("Invalid conversation ID format: {e}"),
+                            annotations: None,
+                        })],
+                        is_error: Some(true),
+                        structured_content: None,
+                    };
+                    self.send_response::<mcp_types::CallToolRequest>(id, result).await;
+                    return;
+                }
+            }
+        } else {
+            // No explicit conversation ID - check continue_conversation flag
+            let should_continue = continue_conversation.unwrap_or(true); // default to true
+            if should_continue {
+                // Try to continue last conversation
+                if let Some(last_conv_id) = *self.last_conversation_id.lock().await {
+                    match self.conversation_manager.get_conversation(last_conv_id).await {
+                        Ok(existing_conversation) => Some((last_conv_id, existing_conversation)),
+                        Err(_) => {
+                            // Last conversation no longer exists - start new one
+                            None
+                        }
+                    }
+                } else {
+                    // No last conversation - start new one
+                    None
+                }
+            } else {
+                // Explicitly requested new conversation
+                None
+            }
+        };
+
         // Create config for this tool call, potentially with overridden cwd
         let config = if let Some(cwd) = tool_cwd {
             // Create config override with tool-specific cwd
@@ -408,136 +458,48 @@ impl MessageProcessor {
             (*self.config).clone()
         };
 
-        // Clone outgoing and server to move into async task.
+        // Clone necessary data for async task
         let outgoing = self.outgoing.clone();
         let conversation_manager = self.conversation_manager.clone();
         let running_requests_id_to_codex_uuid = self.running_requests_id_to_codex_uuid.clone();
+        let last_conversation_id = self.last_conversation_id.clone();
 
         // Spawn an async task to handle the Codex session so that we do not
         // block the synchronous message-processing loop.
         task::spawn(async move {
-            // Run the Codex session and stream events back to the client.
-            crate::codex_tool_runner::run_codex_tool_session(
-                id,
-                initial_prompt,
-                config,
-                outgoing,
-                conversation_manager,
-                running_requests_id_to_codex_uuid,
-            )
-            .await;
-        });
-    }
+            match conversation_mode {
+                Some((conv_id, existing_conversation)) => {
+                    // Continue existing conversation
+                    crate::codex_tool_runner::run_codex_tool_session_reply(
+                        existing_conversation,
+                        outgoing,
+                        id,
+                        initial_prompt,
+                        running_requests_id_to_codex_uuid,
+                        conv_id,
+                    )
+                    .await;
 
-    async fn handle_tool_call_codex_session_reply(
-        &self,
-        request_id: RequestId,
-        arguments: Option<serde_json::Value>,
-    ) {
-        tracing::info!("tools/call -> params: {:?}", arguments);
-
-        // parse arguments
-        let CodexToolCallReplyParam {
-            conversation_id,
-            prompt,
-        } = match arguments {
-            Some(json_val) => match serde_json::from_value::<CodexToolCallReplyParam>(json_val) {
-                Ok(params) => params,
-                Err(e) => {
-                    tracing::error!("Failed to parse Codex tool call reply parameters: {e}");
-                    let result = CallToolResult {
-                        content: vec![ContentBlock::TextContent(TextContent {
-                            r#type: "text".to_owned(),
-                            text: format!("Failed to parse configuration for Codex tool: {e}"),
-                            annotations: None,
-                        })],
-                        is_error: Some(true),
-                        structured_content: None,
-                    };
-                    self.send_response::<mcp_types::CallToolRequest>(request_id, result)
-                        .await;
-                    return;
+                    // Update last conversation ID
+                    *last_conversation_id.lock().await = Some(conv_id);
                 }
-            },
-            None => {
-                tracing::error!(
-                    "Missing arguments for codex-reply tool-call; the `conversation_id` and `prompt` fields are required."
-                );
-                let result = CallToolResult {
-                    content: vec![ContentBlock::TextContent(TextContent {
-                        r#type: "text".to_owned(),
-                        text: "Missing arguments for codex-reply tool-call; the `conversation_id` and `prompt` fields are required.".to_owned(),
-                        annotations: None,
-                    })],
-                    is_error: Some(true),
-                    structured_content: None,
-                };
-                self.send_response::<mcp_types::CallToolRequest>(request_id, result)
+                None => {
+                    // Start new conversation
+                    let conversation_id = crate::codex_tool_runner::run_codex_tool_session(
+                        id,
+                        initial_prompt,
+                        config,
+                        outgoing,
+                        conversation_manager,
+                        running_requests_id_to_codex_uuid,
+                    )
                     .await;
-                return;
-            }
-        };
-        let conversation_id = match ConversationId::from_string(&conversation_id) {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::error!("Failed to parse conversation_id: {e}");
-                let result = CallToolResult {
-                    content: vec![ContentBlock::TextContent(TextContent {
-                        r#type: "text".to_owned(),
-                        text: format!("Failed to parse conversation_id: {e}"),
-                        annotations: None,
-                    })],
-                    is_error: Some(true),
-                    structured_content: None,
-                };
-                self.send_response::<mcp_types::CallToolRequest>(request_id, result)
-                    .await;
-                return;
-            }
-        };
 
-        // Clone outgoing to move into async task.
-        let outgoing = self.outgoing.clone();
-        let running_requests_id_to_codex_uuid = self.running_requests_id_to_codex_uuid.clone();
-
-        let codex = match self
-            .conversation_manager
-            .get_conversation(conversation_id)
-            .await
-        {
-            Ok(c) => c,
-            Err(_) => {
-                tracing::warn!("Session not found for conversation_id: {conversation_id}");
-                let result = CallToolResult {
-                    content: vec![ContentBlock::TextContent(TextContent {
-                        r#type: "text".to_owned(),
-                        text: format!("Session not found for conversation_id: {conversation_id}"),
-                        annotations: None,
-                    })],
-                    is_error: Some(true),
-                    structured_content: None,
-                };
-                outgoing.send_response(request_id, result).await;
-                return;
-            }
-        };
-
-        // Spawn the long-running reply handler.
-        tokio::spawn({
-            let outgoing = outgoing.clone();
-            let prompt = prompt.clone();
-            let running_requests_id_to_codex_uuid = running_requests_id_to_codex_uuid.clone();
-
-            async move {
-                crate::codex_tool_runner::run_codex_tool_session_reply(
-                    codex,
-                    outgoing,
-                    request_id,
-                    prompt,
-                    running_requests_id_to_codex_uuid,
-                    conversation_id,
-                )
-                .await;
+                    // Update last conversation ID if successful
+                    if let Some(conv_id) = conversation_id {
+                        *last_conversation_id.lock().await = Some(conv_id);
+                    }
+                }
             }
         });
     }

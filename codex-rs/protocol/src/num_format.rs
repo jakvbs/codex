@@ -55,9 +55,10 @@ fn format_si_suffix_with_formatter(n: u64, formatter: &DecimalFormatter) -> Stri
     }
 
     // Above 1000G, keep whole‑G precision.
+    let scaled_value = ((n as f64) / 1e9).round() as u64;
     format!(
         "{}G",
-        format_with_separators(((n as f64) / 1e9).round() as u64)
+        formatter.format(&Decimal::from(scaled_value)).to_string()
     )
 }
 

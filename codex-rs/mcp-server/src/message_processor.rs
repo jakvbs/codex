@@ -356,7 +356,7 @@ impl MessageProcessor {
         }
     }
     async fn handle_tool_call_codex(&self, id: RequestId, arguments: Option<serde_json::Value>) {
-        let (initial_prompt, tool_cwd, continue_conversation, conversation_id): (String, Option<PathBuf>, Option<bool>, Option<String>) = match arguments {
+        let (initial_prompt, tool_cwd, resume_last_session, conversation_id): (String, Option<PathBuf>, Option<bool>, Option<String>) = match arguments {
             Some(json_val) => match serde_json::from_value::<CodexToolCallParam>(json_val) {
                 Ok(tool_cfg) => tool_cfg.into_params(),
                 Err(e) => {
@@ -427,8 +427,8 @@ impl MessageProcessor {
                 }
             }
         } else {
-            // No explicit conversation ID - check continue_conversation flag
-            let should_continue = continue_conversation.unwrap_or(true); // default to true
+            // No explicit conversation ID - check resume_last_session flag
+            let should_continue = resume_last_session.unwrap_or(true); // default to true
             if should_continue {
                 // Try to continue last conversation
                 if let Some(last_conv_id) = *self.last_conversation_id.lock().await {

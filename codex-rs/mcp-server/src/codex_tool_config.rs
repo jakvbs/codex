@@ -20,14 +20,14 @@ pub struct CodexToolCallParam {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
 
-    /// Whether to continue the last conversation (default: true).
-    /// If false, always starts a new conversation.
+    /// Whether to resume the last conversation session (default: true).
+    /// If false, always starts a new conversation session.
     /// Ignored if conversation_id is specified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub continue_conversation: Option<bool>,
+    pub resume_last_session: Option<bool>,
 
     /// Specific conversation ID to continue.
-    /// If specified, overrides continue_conversation setting.
+    /// If specified, overrides resume_last_session setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
 }
@@ -72,13 +72,13 @@ impl CodexToolCallParam {
         let Self {
             prompt,
             cwd,
-            continue_conversation,
+            resume_last_session,
             conversation_id,
         } = self;
         (
             prompt,
             cwd.map(PathBuf::from),
-            continue_conversation,
+            resume_last_session,
             conversation_id,
         )
     }
@@ -113,12 +113,12 @@ mod tests {
           "inputSchema": {
             "type": "object",
             "properties": {
-              "continue-conversation": {
-                "description": "Whether to continue the last conversation (default: true). If false, always starts a new conversation. Ignored if conversation_id is specified.",
+              "resume-last-session": {
+                "description": "Whether to resume the last conversation session (default: true). If false, always starts a new conversation session. Ignored if conversation_id is specified.",
                 "type": "boolean"
               },
               "conversation-id": {
-                "description": "Specific conversation ID to continue. If specified, overrides continue_conversation setting.",
+                "description": "Specific conversation ID to continue. If specified, overrides resume_last_session setting.",
                 "type": "string"
               },
               "cwd": {
@@ -145,7 +145,7 @@ impl Default for CodexToolCallParam {
         Self {
             prompt: String::new(),
             cwd: None,
-            continue_conversation: None,
+            resume_last_session: None,
             conversation_id: None,
         }
     }

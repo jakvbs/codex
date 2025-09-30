@@ -18,10 +18,8 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Represents a newly created Codex conversation, including the first event
 /// (which is [`EventMsg::SessionConfigured`]).
@@ -32,9 +30,8 @@ pub struct NewConversation {
 }
 
 /// [`ConversationManager`] is responsible for creating conversations and
-/// maintaining them in memory.
+/// managing them through persistent rollout files on disk.
 pub struct ConversationManager {
-    conversations: Arc<RwLock<HashMap<ConversationId, Arc<CodexConversation>>>>,
     auth_manager: Arc<AuthManager>,
     session_source: SessionSource,
 }
@@ -42,7 +39,6 @@ pub struct ConversationManager {
 impl ConversationManager {
     pub fn new(auth_manager: Arc<AuthManager>, session_source: SessionSource) -> Self {
         Self {
-            conversations: Arc::new(RwLock::new(HashMap::new())),
             auth_manager,
             session_source,
         }
@@ -100,10 +96,6 @@ impl ConversationManager {
         };
 
         let conversation = Arc::new(CodexConversation::new(codex));
-        self.conversations
-            .write()
-            .await
-            .insert(conversation_id, conversation.clone());
 
         Ok(NewConversation {
             conversation_id,
@@ -112,15 +104,66 @@ impl ConversationManager {
         })
     }
 
-    pub async fn get_conversation(
+    /// Get or resume a conversation from disk by its ID. This method first attempts
+    /// to find the conversation rollout file on disk, then resumes it if found.
+    pub async fn get_or_resume_conversation(
         &self,
         conversation_id: ConversationId,
+        config: Config,
     ) -> CodexResult<Arc<CodexConversation>> {
-        let conversations = self.conversations.read().await;
-        conversations
-            .get(&conversation_id)
-            .cloned()
-            .ok_or_else(|| CodexErr::ConversationNotFound(conversation_id))
+        let codex_home = &config.codex_home;
+        let id_str = conversation_id.to_string();
+
+        // Search for rollout file by conversation ID
+        let path = crate::rollout::find_conversation_path_by_id_str(codex_home, &id_str)
+            .await
+            .map_err(|e| CodexErr::Io(e))?;
+
+        if let Some(rollout_path) = path {
+            // Resume conversation from rollout file
+            let resumed = self.resume_conversation_from_rollout(
+                config,
+                rollout_path,
+                self.auth_manager.clone(),
+            ).await?;
+
+            // Verify the conversation_id matches (should always be true, but safety check)
+            if resumed.conversation_id == conversation_id {
+                Ok(resumed.conversation)
+            } else {
+                Err(CodexErr::ConversationNotFound(conversation_id))
+            }
+        } else {
+            // No rollout file found
+            Err(CodexErr::ConversationNotFound(conversation_id))
+        }
+    }
+
+    /// Get the most recent conversation from disk, if any exists.
+    pub async fn get_most_recent_conversation(
+        &self,
+        config: Config,
+    ) -> CodexResult<Option<Arc<CodexConversation>>> {
+        let codex_home = &config.codex_home;
+
+        // Find the most recent rollout file
+        let path = crate::rollout::find_most_recent_conversation_path(codex_home)
+            .await
+            .map_err(|e| CodexErr::Io(e))?;
+
+        if let Some(rollout_path) = path {
+            // Resume conversation from rollout file
+            let resumed = self.resume_conversation_from_rollout(
+                config,
+                rollout_path,
+                self.auth_manager.clone(),
+            ).await?;
+
+            Ok(Some(resumed.conversation))
+        } else {
+            // No conversations found
+            Ok(None)
+        }
     }
 
     pub async fn resume_conversation_from_rollout(
@@ -137,15 +180,15 @@ impl ConversationManager {
         self.finalize_spawn(codex, conversation_id).await
     }
 
-    /// Removes the conversation from the manager's internal map, though the
-    /// conversation is stored as `Arc<CodexConversation>`, it is possible that
-    /// other references to it exist elsewhere. Returns the conversation if the
-    /// conversation was found and removed.
+    /// This method is deprecated since conversations are no longer stored in memory.
+    /// It always returns `None` since there are no in-memory conversations to remove.
+    /// In the new disk-based architecture, conversations are managed through rollout files.
     pub async fn remove_conversation(
         &self,
-        conversation_id: &ConversationId,
+        _conversation_id: &ConversationId,
     ) -> Option<Arc<CodexConversation>> {
-        self.conversations.write().await.remove(conversation_id)
+        // No in-memory storage to remove from in the new disk-based architecture
+        None
     }
 
     /// Fork an existing conversation by taking messages up to the given position

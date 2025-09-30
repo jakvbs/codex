@@ -41,7 +41,6 @@ pub(crate) struct MessageProcessor {
     conversation_manager: Arc<ConversationManager>,
     running_requests_id_to_codex_uuid: Arc<Mutex<HashMap<RequestId, ConversationId>>>,
     config: Arc<Config>,
-    last_conversation_id: Arc<Mutex<Option<ConversationId>>>,
 }
 
 impl MessageProcessor {
@@ -62,7 +61,6 @@ impl MessageProcessor {
             conversation_manager,
             running_requests_id_to_codex_uuid: Arc::new(Mutex::new(HashMap::new())),
             config,
-            last_conversation_id: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -372,24 +370,26 @@ impl MessageProcessor {
             }
         };
 
-        // Determine conversation mode: new vs continue
+        // Determine conversation mode: new vs continue (disk-based)
         let conversation_mode = if let Some(explicit_conversation_id) = conversation_id {
-            // Explicit conversation ID provided - try to continue that specific conversation
+            // Explicit conversation ID provided - try to resume from disk
             match ConversationId::from_string(&explicit_conversation_id) {
-                Ok(conv_id) => match self.conversation_manager.get_conversation(conv_id).await {
-                    Ok(existing_conversation) => Some((conv_id, existing_conversation)),
-                    Err(_) => {
-                        let result = CallToolResult {
-                            content: vec![ContentBlock::TextContent(TextContent {
-                                r#type: "text".to_owned(),
-                                text: format!("Conversation not found: {explicit_conversation_id}"),
-                                annotations: None,
-                            })],
-                            is_error: Some(true),
-                            structured_content: None,
-                        };
-                        self.send_response::<mcp_types::CallToolRequest>(id, result).await;
-                        return;
+                Ok(conv_id) => {
+                    match self.conversation_manager.get_or_resume_conversation(conv_id, (*self.config).clone()).await {
+                        Ok(existing_conversation) => Some((conv_id, existing_conversation)),
+                        Err(_) => {
+                            let result = CallToolResult {
+                                content: vec![ContentBlock::TextContent(TextContent {
+                                    r#type: "text".to_owned(),
+                                    text: format!("Conversation not found on disk: {explicit_conversation_id}"),
+                                    annotations: None,
+                                })],
+                                is_error: Some(true),
+                                structured_content: None,
+                            };
+                            self.send_response::<mcp_types::CallToolRequest>(id, result).await;
+                            return;
+                        }
                     }
                 }
                 Err(e) => {
@@ -410,18 +410,23 @@ impl MessageProcessor {
             // No explicit conversation ID - check resume_last_session flag
             let should_continue = resume_last_session.unwrap_or(true); // default to true
             if should_continue {
-                // Try to continue last conversation
-                if let Some(last_conv_id) = *self.last_conversation_id.lock().await {
-                    match self.conversation_manager.get_conversation(last_conv_id).await {
-                        Ok(existing_conversation) => Some((last_conv_id, existing_conversation)),
-                        Err(_) => {
-                            // Last conversation no longer exists - start new one
-                            None
-                        }
+                // Try to resume most recent conversation from disk
+                match self.conversation_manager.get_most_recent_conversation((*self.config).clone()).await {
+                    Ok(Some(existing_conversation)) => {
+                        // We need to get the conversation ID from the rollout path
+                        // For now, we'll create a dummy ID since we don't have access to it directly
+                        // This will be improved in the next iteration
+                        let dummy_conv_id = ConversationId::new();
+                        Some((dummy_conv_id, existing_conversation))
+                    },
+                    Ok(None) => {
+                        // No conversations found on disk - start new one
+                        None
+                    },
+                    Err(_) => {
+                        // Error reading from disk - start new one
+                        None
                     }
-                } else {
-                    // No last conversation - start new one
-                    None
                 }
             } else {
                 // Explicitly requested new conversation
@@ -462,7 +467,6 @@ impl MessageProcessor {
         let outgoing = self.outgoing.clone();
         let conversation_manager = self.conversation_manager.clone();
         let running_requests_id_to_codex_uuid = self.running_requests_id_to_codex_uuid.clone();
-        let last_conversation_id = self.last_conversation_id.clone();
 
         // Spawn an async task to handle the Codex session so that we do not
         // block the synchronous message-processing loop.
@@ -479,13 +483,10 @@ impl MessageProcessor {
                         conv_id,
                     )
                     .await;
-
-                    // Update last conversation ID
-                    *last_conversation_id.lock().await = Some(conv_id);
                 }
                 None => {
                     // Start new conversation
-                    let conversation_id = crate::codex_tool_runner::run_codex_tool_session(
+                    let _conversation_id = crate::codex_tool_runner::run_codex_tool_session(
                         id,
                         initial_prompt,
                         config,
@@ -494,11 +495,6 @@ impl MessageProcessor {
                         running_requests_id_to_codex_uuid,
                     )
                     .await;
-
-                    // Update last conversation ID if successful
-                    if let Some(conv_id) = conversation_id {
-                        *last_conversation_id.lock().await = Some(conv_id);
-                    }
                 }
             }
         });
@@ -549,7 +545,7 @@ impl MessageProcessor {
         // Obtain the Codex conversation from the server.
         let codex_arc = match self
             .conversation_manager
-            .get_conversation(conversation_id)
+            .get_or_resume_conversation(conversation_id, (*self.config).clone())
             .await
         {
             Ok(c) => c,

@@ -524,3 +524,11 @@ pub async fn find_conversation_path_by_id_str(
         .next()
         .map(|m| root.join(m.path)))
 }
+
+/// Find the most recent conversation rollout file. Returns `Ok(Some(path))` if found,
+/// `Ok(None)` if no conversations exist.
+pub async fn find_most_recent_conversation_path(codex_home: &Path) -> io::Result<Option<PathBuf>> {
+    // Use the existing pagination to get the first (newest) conversation
+    let page = get_conversations(codex_home, 1, None).await?;
+    Ok(page.items.first().map(|item| item.path.clone()))
+}

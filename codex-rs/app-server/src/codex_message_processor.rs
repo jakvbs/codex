@@ -968,7 +968,7 @@ impl CodexMessageProcessor {
         } = params;
         let Ok(conversation) = self
             .conversation_manager
-            .get_conversation(conversation_id)
+            .get_or_resume_conversation(conversation_id, (*self.config).clone())
             .await
         else {
             let error = JSONRPCErrorError {
@@ -1016,7 +1016,7 @@ impl CodexMessageProcessor {
 
         let Ok(conversation) = self
             .conversation_manager
-            .get_conversation(conversation_id)
+            .get_or_resume_conversation(conversation_id, (*self.config).clone())
             .await
         else {
             let error = JSONRPCErrorError {
@@ -1063,7 +1063,7 @@ impl CodexMessageProcessor {
         let InterruptConversationParams { conversation_id } = params;
         let Ok(conversation) = self
             .conversation_manager
-            .get_conversation(conversation_id)
+            .get_or_resume_conversation(conversation_id, (*self.config).clone())
             .await
         else {
             let error = JSONRPCErrorError {
@@ -1093,7 +1093,7 @@ impl CodexMessageProcessor {
         let AddConversationListenerParams { conversation_id } = params;
         let Ok(conversation) = self
             .conversation_manager
-            .get_conversation(conversation_id)
+            .get_or_resume_conversation(conversation_id, (*self.config).clone())
             .await
         else {
             let error = JSONRPCErrorError {

@@ -3,6 +3,7 @@ mod archive_conversation;
 mod auth;
 mod codex_message_processor_flow;
 mod codex_tool;
+mod concurrency;
 mod config;
 mod create_conversation;
 mod fuzzy_file_search;

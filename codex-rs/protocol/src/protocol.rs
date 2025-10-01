@@ -942,6 +942,10 @@ pub enum RolloutItem {
     Compacted(CompactedItem),
     TurnContext(TurnContextItem),
     EventMsg(EventMsg),
+    /// Git repository information collected asynchronously after session creation.
+    /// This is written separately from SessionMeta to avoid blocking session startup
+    /// on slow git commands. Parsers should merge this with SessionMeta when available.
+    GitInfo(GitInfo),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, TS)]

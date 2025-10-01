@@ -56,12 +56,6 @@ fn read_mcp_env_overrides() -> CliConfigOverrides {
         raw_overrides.push(format!("base_instructions=\"{}\"", value));
     }
 
-    if let Ok(_) = std::env::var("CODEX_MCP_CONFIG") {
-        // Assume CONFIG is JSON that needs to be parsed and converted to individual overrides
-        // For now, we'll skip this complex case and handle it in future iteration
-        tracing::warn!("CODEX_MCP_CONFIG is not yet supported");
-    }
-
     if let Ok(value) = std::env::var("CODEX_MCP_INCLUDE_PLAN_TOOL") {
         raw_overrides.push(format!("include_plan_tool={}", value));
     }

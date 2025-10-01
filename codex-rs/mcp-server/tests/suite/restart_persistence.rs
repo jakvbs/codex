@@ -3,6 +3,8 @@ use std::path::Path;
 
 use codex_mcp_server::CodexToolCallParam;
 use mcp_test_support::McpProcess;
+use mcp_test_support::create_final_assistant_message_sse_response;
+use mcp_test_support::create_mock_chat_completions_server;
 use mcp_types::JSONRPCResponse;
 use mcp_types::RequestId;
 use serde_json::json;
@@ -12,12 +14,44 @@ use uuid::Uuid;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Create a config.toml that points to the mock server
+fn create_config_toml(codex_home: &Path, server_uri: &str) -> std::io::Result<()> {
+    let config_toml = codex_home.join("config.toml");
+    std::fs::write(
+        config_toml,
+        format!(
+            r#"
+model = "mock-model"
+approval_policy = "untrusted"
+sandbox_policy = "read-only"
+
+model_provider = "mock_provider"
+
+[model_providers.mock_provider]
+name = "Mock provider for test"
+base_url = "{server_uri}/v1"
+wire_api = "chat"
+request_max_retries = 0
+stream_max_retries = 0
+"#
+        ),
+    )
+}
+
 /// Test that a conversation can be resumed after an MCP server restart using conversation_id.
 /// This tests the new disk-first persistence architecture where conversations are not stored in memory.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_restart_conversation_persistence_by_id() {
+    // Create mock server with responses for both requests (before and after restart)
+    let _mock_server = create_mock_chat_completions_server(vec![
+        create_final_assistant_message_sse_response("Ownership is Rust's key safety feature").expect("create sse 1"),
+        create_final_assistant_message_sse_response("Borrowing allows references without ownership").expect("create sse 2"),
+    ]).await;
+
     // Prepare a temporary CODEX_HOME with a fake rollout file for a specific conversation
     let codex_home = TempDir::new().expect("create temp dir");
+    create_config_toml(codex_home.path(), &_mock_server.uri()).expect("create config");
+
     let conversation_uuid = Uuid::new_v4();
     create_fake_rollout_with_uuid(
         codex_home.path(),
@@ -103,8 +137,14 @@ async fn test_restart_conversation_persistence_by_id() {
 /// This tests the new disk-first approach for finding recent conversations.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_restart_resume_last_session_from_disk() {
+    // Create mock server with response for resume request
+    let _mock_server = create_mock_chat_completions_server(vec![
+        create_final_assistant_message_sse_response("Continuing from the most recent conversation").expect("create sse"),
+    ]).await;
+
     // Prepare a temporary CODEX_HOME with multiple fake rollout files
     let codex_home = TempDir::new().expect("create temp dir");
+    create_config_toml(codex_home.path(), &_mock_server.uri()).expect("create config");
 
     // Create an older conversation
     create_fake_rollout_with_uuid(
@@ -162,7 +202,11 @@ async fn test_restart_resume_last_session_from_disk() {
 /// Test that providing a non-existent conversation_id returns an appropriate error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_nonexistent_conversation_id_error() {
+    // Create mock server (not expected to be called, but needed for config)
+    let _mock_server = create_mock_chat_completions_server(vec![]).await;
+
     let codex_home = TempDir::new().expect("create temp dir");
+    create_config_toml(codex_home.path(), &_mock_server.uri()).expect("create config");
 
     let mut mcp = McpProcess::new(codex_home.path())
         .await

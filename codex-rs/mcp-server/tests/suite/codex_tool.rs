@@ -145,7 +145,7 @@ async fn shell_command_approval_triggers_elicitation() -> anyhow::Result<()> {
     // Extract the response content to check it matches expected pattern
     let response_text = codex_response.result["content"][0]["text"].as_str().unwrap();
     assert!(response_text.starts_with("File created!"));
-    assert!(response_text.contains("[Conversation ID:"));
+    // Conversation ID is in structured_content, not in user-visible text
     assert!(codex_response.result["structuredContent"].is_object());
 
     // Check the basic response structure
@@ -280,7 +280,7 @@ async fn patch_approval_triggers_elicitation() -> anyhow::Result<()> {
     // Extract the response content to check it matches expected pattern
     let response_text = codex_response.result["content"][0]["text"].as_str().unwrap();
     assert!(response_text.starts_with("Patch has been applied successfully!"));
-    assert!(response_text.contains("[Conversation ID:"));
+    // Conversation ID is in structured_content, not in user-visible text
     assert!(codex_response.result["structuredContent"].is_object());
 
     // Check the basic response structure
@@ -340,7 +340,7 @@ async fn codex_tool_passes_base_instructions() -> anyhow::Result<()> {
     // Extract the response content to check it matches expected pattern
     let response_text = codex_response.result["content"][0]["text"].as_str().unwrap();
     assert!(response_text.starts_with("Enjoy!"));
-    assert!(response_text.contains("[Conversation ID:"));
+    // Conversation ID is in structured_content, not in user-visible text
     assert!(codex_response.result["structuredContent"].is_object());
 
     // Check the basic response structure

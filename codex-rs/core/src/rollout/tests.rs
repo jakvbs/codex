@@ -18,12 +18,14 @@ use crate::rollout::list::ConversationsPage;
 use crate::rollout::list::Cursor;
 use crate::rollout::list::get_conversation;
 use crate::rollout::list::get_conversations;
+use crate::rollout::RolloutRecorder;
 use anyhow::Result;
 use codex_protocol::ConversationId;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::InputMessageKind;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
@@ -924,4 +926,113 @@ async fn test_source_filter_excludes_non_matching_sessions() {
     assert!(all_paths.iter().any(|path| {
         path.ends_with("rollout-2025-08-01T10-00-00-00000000-0000-0000-0000-00000000004d.jsonl")
     }));
+}
+
+#[tokio::test]
+async fn test_git_info_merges_into_session_meta() -> Result<()> {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+
+    let ts = "2025-08-01T12-00-00";
+    let uuid = Uuid::from_u128(999);
+    let day_dir = home.join("sessions").join("2025").join("08").join("01");
+    fs::create_dir_all(&day_dir)?;
+    let file_path = day_dir.join(format!("rollout-{ts}-{uuid}.jsonl"));
+    let mut file = File::create(&file_path)?;
+
+    let conversation_id = ConversationId::from_string(&uuid.to_string())?;
+
+    // Write SessionMeta with git: None (simulating immediate write for atomicity)
+    let meta_line = RolloutLine {
+        timestamp: ts.to_string(),
+        item: RolloutItem::SessionMeta(SessionMetaLine {
+            meta: SessionMeta {
+                id: conversation_id,
+                timestamp: ts.to_string(),
+                instructions: None,
+                cwd: ".".into(),
+                originator: "test_originator".into(),
+                cli_version: "test_version".into(),
+            },
+            git: None,
+        }),
+    };
+    writeln!(file, "{}", serde_json::to_string(&meta_line)?)?;
+
+    // Write GitInfo as a separate RolloutItem (simulating async git collection)
+    let git_info = GitInfo {
+        commit_hash: Some("abc123def456".to_string()),
+        branch: Some("main".to_string()),
+        repository_url: Some("https://github.com/test/repo.git".to_string()),
+    };
+    let git_info_line = RolloutLine {
+        timestamp: ts.to_string(),
+        item: RolloutItem::GitInfo(git_info.clone()),
+    };
+    writeln!(file, "{}", serde_json::to_string(&git_info_line)?)?;
+
+    // Write a user message to satisfy listing requirements
+    let user_event_line = RolloutLine {
+        timestamp: ts.to_string(),
+        item: RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            message: "test message".into(),
+            kind: Some(InputMessageKind::Plain),
+            images: None,
+        })),
+    };
+    writeln!(file, "{}", serde_json::to_string(&user_event_line)?)?;
+    drop(file);
+
+    // Parse the rollout file using get_rollout_history
+    let history = RolloutRecorder::get_rollout_history(&file_path).await?;
+
+    // Extract the rollout items
+    let items = history.get_rollout_items();
+
+    // Find the SessionMeta item
+    let session_meta_item = items
+        .iter()
+        .find_map(|item| {
+            if let RolloutItem::SessionMeta(meta) = item {
+                Some(meta)
+            } else {
+                None
+            }
+        })
+        .expect("SessionMeta should be present");
+
+    // Verify that git info was merged into SessionMeta
+    assert!(
+        session_meta_item.git.is_some(),
+        "SessionMeta.git should be Some after parsing"
+    );
+
+    let merged_git = session_meta_item.git.as_ref().unwrap();
+    assert_eq!(
+        merged_git.commit_hash,
+        Some("abc123def456".to_string()),
+        "commit_hash should match"
+    );
+    assert_eq!(
+        merged_git.branch,
+        Some("main".to_string()),
+        "branch should match"
+    );
+    assert_eq!(
+        merged_git.repository_url,
+        Some("https://github.com/test/repo.git".to_string()),
+        "repository_url should match"
+    );
+
+    // Verify that GitInfo is NOT present as a separate item in the parsed results
+    let git_info_count = items
+        .iter()
+        .filter(|item| matches!(item, RolloutItem::GitInfo(_)))
+        .count();
+    assert_eq!(
+        git_info_count, 0,
+        "GitInfo should not be present as a separate item after parsing"
+    );
+
+    Ok(())
 }

@@ -372,6 +372,10 @@ async fn read_head_and_tail(
                     summary.head.push(val);
                 }
             }
+            RolloutItem::GitInfo(_) => {
+                // GitInfo is merged into SessionMeta by the parser, so we skip it here.
+                // The SessionMeta item in head will already contain the git info if it was present.
+            }
             RolloutItem::TurnContext(_) => {
                 // Not included in `head`; skip.
             }

@@ -378,6 +378,16 @@ impl Session {
             error!("failed to initialize rollout recorder: {e:#}");
             anyhow::anyhow!("failed to initialize rollout recorder: {e:#}")
         })?;
+
+        // Flush SessionMeta to disk before proceeding to ensure atomic conversation creation.
+        // This guarantees that the rollout file contains valid metadata before the conversation
+        // becomes accessible, preventing race conditions where clients might try to resume
+        // a conversation before its metadata is persisted.
+        rollout_recorder.flush().await.map_err(|e| {
+            error!("failed to flush initial rollout metadata: {e:#}");
+            anyhow::anyhow!("failed to flush initial rollout metadata: {e:#}")
+        })?;
+
         let rollout_path = rollout_recorder.rollout_path.clone();
         // Create the mutable state for the Session.
         let state = SessionState::new();

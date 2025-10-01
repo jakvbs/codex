@@ -161,7 +161,27 @@ impl RolloutRecorder {
         // Spawn a Tokio task that owns the file handle and performs async
         // writes. Using `tokio::fs::File` keeps everything on the async I/O
         // driver instead of blocking the runtime.
-        tokio::task::spawn(rollout_writer(file, rx, meta, cwd));
+        let should_collect_git = meta.is_some();
+        tokio::task::spawn(rollout_writer(file, rx, meta, cwd.clone()));
+
+        // If we're creating a new session (not resuming), spawn a background task to collect
+        // git info asynchronously and write it to the rollout file after SessionMeta.
+        // This avoids blocking session startup on slow git commands (~5s) while still
+        // preserving git metadata for downstream consumers.
+        if should_collect_git {
+            let tx_clone = tx.clone();
+            tokio::spawn(async move {
+                if let Some(git_info) = collect_git_info(&cwd).await {
+                    // Send the git info to be written as a separate RolloutItem
+                    if let Err(_) = tx_clone
+                        .send(RolloutCmd::AddItems(vec![RolloutItem::GitInfo(git_info)]))
+                        .await
+                    {
+                        tracing::trace!("git info send failed - rollout writer already shutdown");
+                    }
+                }
+            });
+        }
 
         Ok(Self { tx, rollout_path })
     }
@@ -205,6 +225,8 @@ impl RolloutRecorder {
 
         let mut items: Vec<RolloutItem> = Vec::new();
         let mut conversation_id: Option<ConversationId> = None;
+        let mut session_meta_index: Option<usize> = None;
+
         for line in text.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -225,8 +247,23 @@ impl RolloutRecorder {
                         // conversation id and main session information. Keep all items intact.
                         if conversation_id.is_none() {
                             conversation_id = Some(session_meta_line.meta.id);
+                            session_meta_index = Some(items.len());
                         }
                         items.push(RolloutItem::SessionMeta(session_meta_line));
+                    }
+                    RolloutItem::GitInfo(git_info) => {
+                        // Merge GitInfo into the SessionMeta if we have one.
+                        // GitInfo is written separately after SessionMeta to avoid blocking
+                        // session startup on slow git commands.
+                        if let Some(idx) = session_meta_index {
+                            if let Some(RolloutItem::SessionMeta(session_meta)) = items.get_mut(idx) {
+                                // Unconditionally assign git info - last write wins.
+                                // This ensures we always have the most recent git metadata
+                                // if multiple GitInfo items are present (future-proofing).
+                                session_meta.git = Some(git_info);
+                            }
+                        }
+                        // Don't push GitInfo as a separate item - it's been merged into SessionMeta
                     }
                     RolloutItem::ResponseItem(item) => {
                         items.push(RolloutItem::ResponseItem(item));
@@ -343,16 +380,20 @@ async fn rollout_writer(
     file: tokio::fs::File,
     mut rx: mpsc::Receiver<RolloutCmd>,
     mut meta: Option<SessionMeta>,
-    cwd: std::path::PathBuf,
+    _cwd: std::path::PathBuf,
 ) -> std::io::Result<()> {
     let mut writer = JsonlWriter { file };
 
-    // If we have a meta, collect git info asynchronously and write meta first
+    // If we have a meta, write it immediately with git: None to ensure atomic conversation creation.
+    // Git info collection can take up to 5s and would block session startup. Since git info is
+    // optional metadata (not required for conversation functionality), we write the SessionMeta
+    // immediately to guarantee the rollout file is valid before the conversation becomes accessible.
+    // Git info will be collected and written separately by a background task spawned in
+    // RolloutRecorder::new().
     if let Some(session_meta) = meta.take() {
-        let git_info = collect_git_info(&cwd).await;
         let session_meta_line = SessionMetaLine {
             meta: session_meta,
-            git: git_info,
+            git: None,
         };
 
         // Write the SessionMeta as the first item in the file, wrapped in a rollout line

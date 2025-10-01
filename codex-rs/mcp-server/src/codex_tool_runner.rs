@@ -238,11 +238,10 @@ async fn run_codex_tool_session_inner(
                             .get(&request_id)
                             .cloned();
 
-                        let text = if let Some(ref conv_id) = conversation_id {
-                            format!("{}\n\n[Conversation ID: {}]", base_text, conv_id)
-                        } else {
-                            base_text
-                        };
+                        // Don't append conversation_id to text - it's already shown in
+                        // SessionConfigured notification at session start and available
+                        // in structured_content for programmatic access
+                        let text = base_text;
 
                         let structured_content = if let Some(ref conv_id) = conversation_id {
                             let content = json!({

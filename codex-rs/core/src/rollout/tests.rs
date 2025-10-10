@@ -953,6 +953,7 @@ async fn test_git_info_merges_into_session_meta() -> Result<()> {
                 cwd: ".".into(),
                 originator: "test_originator".into(),
                 cli_version: "test_version".into(),
+                source: SessionSource::VSCode,
             },
             git: None,
         }),

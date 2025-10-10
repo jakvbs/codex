@@ -441,7 +441,7 @@ impl MessageProcessor {
                 cwd: Some(cwd),
                 ..ConfigOverrides::default()
             };
-            match Config::load_with_cli_overrides(Vec::new(), overrides) {
+            match Config::load_with_cli_overrides(Vec::new(), overrides).await {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     let result = CallToolResult {
